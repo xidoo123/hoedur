@@ -43,6 +43,15 @@ use crate::{
     stream_distribution::{StreamDistribution, StreamRandomDistribution},
 };
 
+
+// use std::collections::LinkedList;
+// use std::sync::Mutex;
+// use std::thread;
+
+// lazy_static::lazy_static! {
+//     static ref snapshot_test_list: Mutex<LinkedList<EmulatorSnapshot>> = Mutex::new(LinkedList::new());
+// }        
+
 pub struct Fuzzer {
     archive: ArchiveBuilder,
     emulator: Emulator<InputFile>,
@@ -152,6 +161,8 @@ impl Fuzzer {
         let pre_fuzzing = emulator
             .snapshot_create()
             .context("Failed to create pre-fuzzer snapshot")?;
+
+        log::info!("Prefuzzing snapshot {:?}", pre_fuzzing);
 
         // set seed
         let seed = seed.unwrap_or_else(|| {
@@ -286,56 +297,74 @@ impl Fuzzer {
     }
 
     fn run_snapshot_fuzzer(&mut self) -> Result<()> {
-        if MINIMIZE_MUTATION_CHAIN {
-            // TODO: add support:
-            // - pass base_input into minimize_mutation_chain
-            // - set cursor when base_input is some
-            anyhow::bail!("Snapshot fuzzer doesn't support MINIMIZE_MUTATION_CHAIN");
-        }
 
         log::info!("Started snapshot fuzzing...");
+
+        let snapshot = self.pre_fuzzing.clone();
+
         while !EXIT.load(Ordering::Relaxed) {
-            // get random base input
-            let base_info = self.next_input().context("Failed to get random input.")?;
-            let mut base_input = base_info.result().file().clone();
-            base_input.set_read_limit(fastrand::usize(0..=base_input.len()));
+            // random input for mutation
+            let input = self
+                .next_input()
+                .context("Failed to get random input.")?
+                .fork();
 
-            // emulator counts before execution
-            let counts = EXECUTIONS_HISTORY.then(|| self.emulator.counts());
+            self.run_mutations(input, None, &snapshot)?;
 
-            // run base input
-            let base_result = self
-                .emulator
-                .run(base_input, RunMode::Normal)
-                .context("run emulator")?;
-
-            // track emulator counts
-            if let Some(base) = counts {
-                self.statistics
-                    .process_counts(base_result.counts.clone() - base);
-            }
-
-            // base input
-            let base_input = InputResult::from(base_result).as_fork();
-            log::trace!("base_input: {}", base_input.file());
-
-            // emulator snapshot (between input parts)
-            let snapshot = self
-                .emulator
-                .snapshot_create()
-                .context("Failed to create emulator snapshpot")?;
-
-            for _ in 0..SNAPSHPOT_MUTATION_LIMIT {
-                if self.run_mutations(base_input.clone(), Some(base_input.file()), &snapshot)? {
-                    break;
-                }
-            }
-
-            // restore emulator
-            self.emulator.snapshot_restore(&self.pre_fuzzing);
         }
 
         Ok(())
+
+        // if MINIMIZE_MUTATION_CHAIN {
+        //     // TODO: add support:
+        //     // - pass base_input into minimize_mutation_chain
+        //     // - set cursor when base_input is some
+        //     anyhow::bail!("Snapshot fuzzer doesn't support MINIMIZE_MUTATION_CHAIN");
+        // }
+
+        // log::info!("Started snapshot fuzzing...");
+        // while !EXIT.load(Ordering::Relaxed) {
+        //     // get random base input
+        //     let base_info = self.next_input().context("Failed to get random input.")?;
+        //     let mut base_input = base_info.result().file().clone();
+        //     base_input.set_read_limit(fastrand::usize(0..=base_input.len()));
+
+        //     // emulator counts before execution
+        //     let counts = EXECUTIONS_HISTORY.then(|| self.emulator.counts());
+
+        //     // run base input
+        //     let base_result = self
+        //         .emulator
+        //         .run(base_input, RunMode::Normal)
+        //         .context("run emulator")?;
+
+        //     // track emulator counts
+        //     if let Some(base) = counts {
+        //         self.statistics
+        //             .process_counts(base_result.counts.clone() - base);
+        //     }
+
+        //     // base input
+        //     let base_input = InputResult::from(base_result).as_fork();
+        //     log::trace!("base_input: {}", base_input.file());
+
+        //     // emulator snapshot (between input parts)
+        //     let snapshot = self
+        //         .emulator
+        //         .snapshot_create()
+        //         .context("Failed to create emulator snapshpot")?;
+
+        //     for _ in 0..SNAPSHPOT_MUTATION_LIMIT {
+        //         if self.run_mutations(base_input.clone(), Some(base_input.file()), &snapshot)? {
+        //             break;
+        //         }
+        //     }
+
+        //     // restore emulator
+        //     self.emulator.snapshot_restore(&self.pre_fuzzing);
+        // }
+
+        // Ok(())
     }
 
     fn run_mutations(
@@ -441,6 +470,15 @@ impl Fuzzer {
         let result = self
             .process_result(result, import)
             .context("Process execution result")?;
+
+
+        let new_snapshot = self
+            .emulator
+            .snapshot_create()
+            .context("Failed to create emulator snapshpot")?;
+
+        log::info!("Snapshot {:?}", new_snapshot);
+        // snapshot_test_list.push_back(snapshot);
 
         // restore emulator
         self.emulator.snapshot_restore(snapshot);
